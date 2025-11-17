@@ -1,0 +1,101 @@
+import cv2
+import numpy as np
+import onnxruntime as ort
+import time
+import csv
+import os
+
+# ======================================================
+# Configuration
+# ======================================================
+MODEL_PATH = "yolo8n_int8.onnx"
+VIDEO_PATH = "data/hehe2.mp4"
+CONF_THRESH = 0.4
+IOU_THRESH = 0.5
+IMG_SIZE = 320   # smaller = faster on Pi
+
+# ======================================================
+# Setup
+# ======================================================
+sess = ort.InferenceSession(
+    MODEL_PATH,
+    providers=["CPUExecutionProvider"]
+)
+
+input_name = sess.get_inputs()[0].name
+output_name = sess.get_outputs()[0].name
+
+cap = cv2.VideoCapture(VIDEO_PATH)
+os.makedirs("Outputs", exist_ok=True)
+out = cv2.VideoWriter(
+    "Outputs/output_yolo8n_int8.mp4",
+    cv2.VideoWriter_fourcc(*'mp4v'),
+    20.0,
+    (int(cap.get(3)), int(cap.get(4)))
+)
+
+csv_file = open("Outputs/detections.csv", "w", newline="")
+writer = csv.writer(csv_file)
+writer.writerow(["frame", "x1", "y1", "x2", "y2", "conf", "cls"])
+
+# ======================================================
+# Helper: Preprocess
+# ======================================================
+def preprocess(frame):
+    img = cv2.resize(frame, (IMG_SIZE, IMG_SIZE))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img / 255.0
+    img = np.transpose(img, (2, 0, 1))
+    img = np.expand_dims(img, 0).astype(np.float32)
+    return img
+
+# ======================================================
+# Main loop
+# ======================================================
+frame_num = 0
+times = []
+
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        break
+    frame_num += 1
+    start = time.time()
+
+    img = preprocess(frame)
+    outputs = sess.run([output_name], {input_name: img})[0]
+
+    # YOLOv8 head outputs [batch, num_boxes, 85]
+    preds = outputs[0]
+    boxes = preds[:, :4]
+    confs = preds[:, 4]
+    cls_scores = preds[:, 5:]
+    cls_ids = np.argmax(cls_scores, axis=1)
+    confs = confs * cls_scores[np.arange(len(cls_scores)), cls_ids]
+
+    # NMS
+    keep = confs > CONF_THRESH
+    boxes = boxes[keep]
+    confs = confs[keep]
+    cls_ids = cls_ids[keep]
+
+    idxs = cv2.dnn.NMSBoxes(
+        boxes.tolist(), confs.tolist(), CONF_THRESH, IOU_THRESH
+    )
+
+    for i in idxs:
+        x, y, w, h = boxes[i].astype(int)
+        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
+        label = f"{int(cls_ids[i])}:{confs[i]:.2f}"
+        cv2.putText(frame, label, (x, y - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        writer.writerow([frame_num, x, y, x+w, y+h, confs[i], int(cls_ids[i])])
+
+    out.write(frame)
+    times.append(time.time() - start)
+
+cap.release()
+out.release()
+csv_file.close()
+
+print(f"✅ Done! Average FPS: {1 / np.mean(times):.2f}")

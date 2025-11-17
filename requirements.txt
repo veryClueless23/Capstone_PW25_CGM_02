@@ -1,0 +1,11 @@
+filterpy==1.4.5
+lapx
+opencv-python
+numpy<= 2.3.0
+psutil
+matplotlib
+scipy
+filterpy
+pandas
+ultralytics
+scikit-image==0.22.0
